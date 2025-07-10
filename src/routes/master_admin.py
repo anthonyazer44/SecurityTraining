@@ -296,3 +296,167 @@ def check_auth():
         'user_type': session.get('user_type')
     })
 
+
+# Password Management Routes
+
+@master_admin_bp.route('/companies/<int:company_id>/password', methods=['GET'])
+def get_company_password(company_id):
+    """Get company admin password (for master admin only)"""
+    if not require_master_admin_auth():
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    company = Company.query.get_or_404(company_id)
+    
+    # For security, we don't return the actual hashed password
+    # Instead, we provide a way to reset it
+    return jsonify({
+        'company_id': company.id,
+        'company_name': company.name,
+        'has_password': bool(company.admin_password),
+        'password_last_updated': company.updated_at.isoformat() if company.updated_at else None
+    })
+
+@master_admin_bp.route('/companies/<int:company_id>/password', methods=['PUT'])
+def update_company_password(company_id):
+    """Update/reset company admin password"""
+    if not require_master_admin_auth():
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    company = Company.query.get_or_404(company_id)
+    data = request.get_json()
+    
+    # Check if custom password provided or generate new one
+    if data.get('password'):
+        new_password = data['password']
+        # Validate password strength
+        if len(new_password) < 8:
+            return jsonify({'error': 'Password must be at least 8 characters long'}), 400
+    else:
+        # Generate secure password
+        new_password = PasswordSecurity.generate_secure_password()
+    
+    # Hash the new password
+    hashed_password = PasswordSecurity.hash_password(new_password)
+    
+    try:
+        company.admin_password = hashed_password
+        company.updated_at = datetime.now()
+        db.session.commit()
+        
+        # Log the password change
+        AuditLogger.log_security_event(
+            'PASSWORD_RESET', 
+            f'Company {company.name} password reset by master admin',
+            request.remote_addr
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Company password updated successfully',
+            'new_password': new_password,  # Return plain text for master admin
+            'company_id': company.id,
+            'company_name': company.name
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': 'Failed to update password'}), 500
+
+@master_admin_bp.route('/companies/<int:company_id>/password/generate', methods=['POST'])
+def generate_company_password(company_id):
+    """Generate a new secure password for company"""
+    if not require_master_admin_auth():
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    company = Company.query.get_or_404(company_id)
+    
+    # Generate new secure password
+    new_password = PasswordSecurity.generate_secure_password()
+    hashed_password = PasswordSecurity.hash_password(new_password)
+    
+    try:
+        company.admin_password = hashed_password
+        company.updated_at = datetime.now()
+        db.session.commit()
+        
+        # Log the password generation
+        AuditLogger.log_security_event(
+            'PASSWORD_GENERATED', 
+            f'New password generated for company {company.name}',
+            request.remote_addr
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'New password generated successfully',
+            'new_password': new_password,
+            'company_id': company.id,
+            'company_name': company.name
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': 'Failed to generate password'}), 500
+
+@master_admin_bp.route('/companies/passwords/bulk-reset', methods=['POST'])
+def bulk_reset_company_passwords():
+    """Reset passwords for multiple companies"""
+    if not require_master_admin_auth():
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    data = request.get_json()
+    company_ids = data.get('company_ids', [])
+    
+    if not company_ids:
+        return jsonify({'error': 'company_ids are required'}), 400
+    
+    companies = Company.query.filter(Company.id.in_(company_ids)).all()
+    reset_results = []
+    
+    try:
+        for company in companies:
+            # Generate new password for each company
+            new_password = PasswordSecurity.generate_secure_password()
+            hashed_password = PasswordSecurity.hash_password(new_password)
+            
+            company.admin_password = hashed_password
+            company.updated_at = datetime.now()
+            
+            reset_results.append({
+                'company_id': company.id,
+                'company_name': company.name,
+                'new_password': new_password
+            })
+        
+        db.session.commit()
+        
+        # Log bulk password reset
+        AuditLogger.log_security_event(
+            'BULK_PASSWORD_RESET', 
+            f'Bulk password reset for {len(companies)} companies',
+            request.remote_addr
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': f'Passwords reset for {len(companies)} companies',
+            'reset_results': reset_results
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': 'Failed to reset passwords'}), 500
+
+@master_admin_bp.route('/password-policy', methods=['GET'])
+def get_password_policy():
+    """Get current password policy settings"""
+    if not require_master_admin_auth():
+        return jsonify({'error': 'Authentication required'}), 401
+    
+    return jsonify({
+        'minimum_length': 8,
+        'require_uppercase': True,
+        'require_lowercase': True,
+        'require_numbers': True,
+        'require_special_chars': True,
+        'password_expiry_days': 90,
+        'password_history_count': 5
+    })
+

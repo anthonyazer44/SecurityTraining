@@ -107,6 +107,9 @@ class MasterAdmin {
                         <button class="btn btn-sm btn-secondary" onclick="masterAdmin.editCompany(${company.id})">
                             <i class="fas fa-edit"></i> Edit
                         </button>
+                        <button class="btn btn-sm btn-warning" onclick="masterAdmin.manageCompanyPassword(${company.id}, '${escapeHtml(company.name)}')">
+                            <i class="fas fa-key"></i> Password
+                        </button>
                         <button class="btn btn-sm btn-primary" onclick="masterAdmin.loginAsAdmin(${company.id})">
                             <i class="fas fa-sign-in-alt"></i> Login
                         </button>
@@ -188,6 +191,7 @@ class MasterAdmin {
                     <option value="">Select action...</option>
                     <option value="activate">Activate Companies</option>
                     <option value="deactivate">Deactivate Companies</option>
+                    <option value="reset-passwords">Reset All Passwords</option>
                 </select>
             </div>
         `, [
@@ -210,6 +214,13 @@ class MasterAdmin {
         
         if (!action) {
             showAlert('Please select an action.', 'warning');
+            return;
+        }
+
+        // Handle password reset separately
+        if (action === 'reset-passwords') {
+            closeModal(modal);
+            await this.executeBulkPasswordReset(companyIds);
             return;
         }
 
@@ -568,6 +579,276 @@ class MasterAdmin {
 
         html += '</tbody></table></div>';
         return html;
+    }
+
+    // Password Management Functions
+
+    // Show company password management modal
+    async manageCompanyPassword(companyId, companyName) {
+        try {
+            // Get current password info
+            const response = await fetch(`/api/master-admin/companies/${companyId}/password`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to get password info');
+            }
+
+            const passwordInfo = await response.json();
+
+            const modal = createModal(`Manage Password - ${companyName}`, `
+                <div class="password-management">
+                    <div class="form-group">
+                        <label class="form-label">Company Information</label>
+                        <div class="info-card">
+                            <p><strong>Company:</strong> ${escapeHtml(companyName)}</p>
+                            <p><strong>Has Password:</strong> ${passwordInfo.has_password ? 'Yes' : 'No'}</p>
+                            <p><strong>Last Updated:</strong> ${passwordInfo.password_last_updated ? formatDateTime(passwordInfo.password_last_updated) : 'Never'}</p>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Password Management</label>
+                        <div class="password-actions">
+                            <button class="btn btn-primary" onclick="masterAdmin.generateCompanyPassword(${companyId}, '${escapeHtml(companyName)}')">
+                                <i class="fas fa-random"></i> Generate New Password
+                            </button>
+                            <button class="btn btn-secondary" onclick="masterAdmin.showCustomPasswordForm(${companyId}, '${escapeHtml(companyName)}')">
+                                <i class="fas fa-edit"></i> Set Custom Password
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="passwordResult" class="password-result" style="display: none;">
+                        <!-- Password result will be shown here -->
+                    </div>
+                </div>
+            `, [
+                {
+                    text: 'Close',
+                    class: 'btn-secondary',
+                    onclick: () => closeModal(modal)
+                }
+            ]);
+
+        } catch (error) {
+            showAlert('Failed to load password information: ' + error.message, 'error');
+        }
+    }
+
+    // Generate new password for company
+    async generateCompanyPassword(companyId, companyName) {
+        try {
+            const response = await fetch(`/api/master-admin/companies/${companyId}/password/generate`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to generate password');
+            }
+
+            const result = await response.json();
+
+            // Show the new password
+            const resultDiv = document.getElementById('passwordResult');
+            resultDiv.innerHTML = `
+                <div class="alert alert-success">
+                    <h4><i class="fas fa-check-circle"></i> Password Generated Successfully!</h4>
+                    <div class="new-password">
+                        <label class="form-label">New Password for ${escapeHtml(companyName)}:</label>
+                        <div class="password-display">
+                            <input type="text" class="form-input" value="${result.new_password}" readonly>
+                            <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${result.new_password}')">
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                        </div>
+                        <p class="text-muted">Please save this password securely. It cannot be retrieved again.</p>
+                    </div>
+                </div>
+            `;
+            resultDiv.style.display = 'block';
+
+            showAlert('Password generated successfully!', 'success');
+
+        } catch (error) {
+            showAlert('Failed to generate password: ' + error.message, 'error');
+        }
+    }
+
+    // Show custom password form
+    showCustomPasswordForm(companyId, companyName) {
+        const resultDiv = document.getElementById('passwordResult');
+        resultDiv.innerHTML = `
+            <div class="custom-password-form">
+                <h4>Set Custom Password for ${escapeHtml(companyName)}</h4>
+                <div class="form-group">
+                    <label class="form-label">New Password</label>
+                    <input type="password" class="form-input" id="customPassword" placeholder="Enter new password (min 8 characters)">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Confirm Password</label>
+                    <input type="password" class="form-input" id="confirmPassword" placeholder="Confirm new password">
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="masterAdmin.setCustomPassword(${companyId}, '${escapeHtml(companyName)}')">
+                        <i class="fas fa-save"></i> Set Password
+                    </button>
+                    <button class="btn btn-secondary" onclick="document.getElementById('passwordResult').style.display = 'none'">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        `;
+        resultDiv.style.display = 'block';
+    }
+
+    // Set custom password for company
+    async setCustomPassword(companyId, companyName) {
+        const password = document.getElementById('customPassword').value;
+        const confirmPassword = document.getElementById('confirmPassword').value;
+
+        if (!password || !confirmPassword) {
+            showAlert('Please fill in both password fields.', 'warning');
+            return;
+        }
+
+        if (password !== confirmPassword) {
+            showAlert('Passwords do not match.', 'warning');
+            return;
+        }
+
+        if (password.length < 8) {
+            showAlert('Password must be at least 8 characters long.', 'warning');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/master-admin/companies/${companyId}/password`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ password: password })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to set password');
+            }
+
+            const result = await response.json();
+
+            // Show success message
+            const resultDiv = document.getElementById('passwordResult');
+            resultDiv.innerHTML = `
+                <div class="alert alert-success">
+                    <h4><i class="fas fa-check-circle"></i> Password Set Successfully!</h4>
+                    <p>Custom password has been set for ${escapeHtml(companyName)}.</p>
+                </div>
+            `;
+
+            showAlert('Password set successfully!', 'success');
+
+        } catch (error) {
+            showAlert('Failed to set password: ' + error.message, 'error');
+        }
+    }
+
+    // Bulk password reset for selected companies
+    async bulkResetPasswords() {
+        const selectedIds = Array.from(document.querySelectorAll('.company-checkbox:checked'))
+            .map(cb => parseInt(cb.value));
+
+        if (selectedIds.length === 0) {
+            showAlert('Please select at least one company.', 'warning');
+            return;
+        }
+
+        const confirmModal = createModal('Bulk Password Reset', `
+            <div class="alert alert-warning">
+                <h4><i class="fas fa-exclamation-triangle"></i> Confirm Bulk Password Reset</h4>
+                <p>This will generate new passwords for <strong>${selectedIds.length}</strong> selected companies.</p>
+                <p>The current passwords will be replaced and cannot be recovered.</p>
+            </div>
+        `, [
+            {
+                text: 'Cancel',
+                class: 'btn-secondary',
+                onclick: () => closeModal(confirmModal)
+            },
+            {
+                text: 'Reset Passwords',
+                class: 'btn-danger',
+                onclick: async () => {
+                    closeModal(confirmModal);
+                    await this.executeBulkPasswordReset(selectedIds);
+                }
+            }
+        ]);
+    }
+
+    // Execute bulk password reset
+    async executeBulkPasswordReset(companyIds) {
+        try {
+            const response = await fetch('/api/master-admin/companies/passwords/bulk-reset', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ company_ids: companyIds })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to reset passwords');
+            }
+
+            const result = await response.json();
+
+            // Show results modal with new passwords
+            let passwordsHtml = '<div class="bulk-password-results">';
+            result.reset_results.forEach(company => {
+                passwordsHtml += `
+                    <div class="company-password-result">
+                        <h5>${escapeHtml(company.company_name)}</h5>
+                        <div class="password-display">
+                            <input type="text" class="form-input" value="${company.new_password}" readonly>
+                            <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${company.new_password}')">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            passwordsHtml += '</div>';
+
+            const resultsModal = createModal('Bulk Password Reset Results', `
+                <div class="alert alert-success">
+                    <h4><i class="fas fa-check-circle"></i> Passwords Reset Successfully!</h4>
+                    <p>New passwords have been generated for ${result.reset_results.length} companies:</p>
+                </div>
+                ${passwordsHtml}
+                <div class="alert alert-info">
+                    <p><strong>Important:</strong> Please save these passwords securely. They cannot be retrieved again.</p>
+                </div>
+            `, [
+                {
+                    text: 'Close',
+                    class: 'btn-primary',
+                    onclick: () => closeModal(resultsModal)
+                }
+            ]);
+
+            showAlert(`Passwords reset for ${result.reset_results.length} companies!`, 'success');
+
+        } catch (error) {
+            showAlert('Failed to reset passwords: ' + error.message, 'error');
+        }
     }
 
     // Render header for all master admin pages

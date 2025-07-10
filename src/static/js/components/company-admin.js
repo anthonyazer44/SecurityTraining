@@ -429,7 +429,7 @@ class CompanyAdmin {
         this.filteredEmployees.forEach(employee => {
             tableHtml += `
                 <tr>
-                    <td><strong>${escapeHtml(employee.first_name)} ${escapeHtml(employee.last_name)}</strong></td>
+                    <td><strong>${escapeHtml(employee.name)}</strong></td>
                     <td>${escapeHtml(employee.email)}</td>
                     <td>${escapeHtml(employee.department || 'N/A')}</td>
                     <td>${escapeHtml(employee.position || 'N/A')}</td>
@@ -441,6 +441,9 @@ class CompanyAdmin {
                     <td>
                         <button class="btn btn-sm btn-secondary" onclick="companyAdmin.editEmployee(${employee.id})">
                             <i class="fas fa-edit"></i> Edit
+                        </button>
+                        <button class="btn btn-sm btn-warning" onclick="companyAdmin.manageEmployeePassword(${employee.id}, '${escapeHtml(employee.name)}')">
+                            <i class="fas fa-key"></i> Password
                         </button>
                         <button class="btn btn-sm btn-danger" onclick="companyAdmin.deleteEmployee(${employee.id})">
                             <i class="fas fa-trash"></i> Delete
@@ -458,7 +461,7 @@ class CompanyAdmin {
         return this.employees.map(employee => `
             <label class="checkbox-label">
                 <input type="checkbox" class="employee-checkbox" value="${employee.id}">
-                <span>${escapeHtml(employee.first_name)} ${escapeHtml(employee.last_name)} (${escapeHtml(employee.email)})</span>
+                <span>${escapeHtml(employee.name)} (${escapeHtml(employee.email)})</span>
             </label>
         `).join('');
     }
@@ -815,7 +818,7 @@ class CompanyAdmin {
         if (!employee) return;
 
         confirmDialog(
-            `Are you sure you want to delete "${employee.first_name} ${employee.last_name}"? This action cannot be undone.`,
+            `Are you sure you want to delete "${employee.name}"? This action cannot be undone.`,
             async () => {
                 try {
                     showLoading();
@@ -834,6 +837,192 @@ class CompanyAdmin {
                 }
             }
         );
+    }
+
+    // Employee Password Management Functions
+
+    // Show employee password management modal
+    async manageEmployeePassword(employeeId, employeeName) {
+        try {
+            const companyId = auth.getCompanyId();
+            
+            // Get current password info
+            const response = await fetch(`/api/company-admin/${companyId}/employees/${employeeId}/password`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to get password info');
+            }
+
+            const passwordInfo = await response.json();
+
+            const modal = createModal(`Manage Password - ${employeeName}`, `
+                <div class="password-management">
+                    <div class="form-group">
+                        <label class="form-label">Employee Information</label>
+                        <div class="info-card">
+                            <p><strong>Employee:</strong> ${escapeHtml(employeeName)}</p>
+                            <p><strong>Email:</strong> ${escapeHtml(passwordInfo.employee_email)}</p>
+                            <p><strong>Has Password:</strong> ${passwordInfo.has_password ? 'Yes' : 'No'}</p>
+                            <p><strong>Last Updated:</strong> ${passwordInfo.password_last_updated ? formatDateTime(passwordInfo.password_last_updated) : 'Never'}</p>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Password Management</label>
+                        <div class="password-actions">
+                            <button class="btn btn-primary" onclick="companyAdmin.generateEmployeePassword(${employeeId}, '${escapeHtml(employeeName)}')">
+                                <i class="fas fa-random"></i> Generate New Password
+                            </button>
+                            <button class="btn btn-secondary" onclick="companyAdmin.showCustomEmployeePasswordForm(${employeeId}, '${escapeHtml(employeeName)}')">
+                                <i class="fas fa-edit"></i> Set Custom Password
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="employeePasswordResult" class="password-result" style="display: none;">
+                        <!-- Password result will be shown here -->
+                    </div>
+                </div>
+            `, [
+                {
+                    text: 'Close',
+                    class: 'btn-secondary',
+                    onclick: () => closeModal(modal)
+                }
+            ]);
+
+        } catch (error) {
+            showAlert('Failed to load password information: ' + error.message, 'error');
+        }
+    }
+
+    // Generate new password for employee
+    async generateEmployeePassword(employeeId, employeeName) {
+        try {
+            const companyId = auth.getCompanyId();
+            
+            const response = await fetch(`/api/company-admin/${companyId}/employees/${employeeId}/password/generate`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to generate password');
+            }
+
+            const result = await response.json();
+
+            // Show the new password
+            const resultDiv = document.getElementById('employeePasswordResult');
+            resultDiv.innerHTML = `
+                <div class="alert alert-success">
+                    <h4><i class="fas fa-check-circle"></i> Password Generated Successfully!</h4>
+                    <div class="new-password">
+                        <label class="form-label">New Password for ${escapeHtml(employeeName)}:</label>
+                        <div class="password-display">
+                            <input type="text" class="form-input" value="${result.new_password}" readonly>
+                            <button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${result.new_password}')">
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                        </div>
+                        <p class="text-muted">Please save this password securely. It cannot be retrieved again.</p>
+                    </div>
+                </div>
+            `;
+            resultDiv.style.display = 'block';
+
+            showAlert('Password generated successfully!', 'success');
+
+        } catch (error) {
+            showAlert('Failed to generate password: ' + error.message, 'error');
+        }
+    }
+
+    // Show custom password form for employee
+    showCustomEmployeePasswordForm(employeeId, employeeName) {
+        const resultDiv = document.getElementById('employeePasswordResult');
+        resultDiv.innerHTML = `
+            <div class="custom-password-form">
+                <h4>Set Custom Password for ${escapeHtml(employeeName)}</h4>
+                <div class="form-group">
+                    <label class="form-label">New Password</label>
+                    <input type="password" class="form-input" id="customEmployeePassword" placeholder="Enter new password (min 6 characters)">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Confirm Password</label>
+                    <input type="password" class="form-input" id="confirmEmployeePassword" placeholder="Confirm new password">
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="companyAdmin.setCustomEmployeePassword(${employeeId}, '${escapeHtml(employeeName)}')">
+                        <i class="fas fa-save"></i> Set Password
+                    </button>
+                    <button class="btn btn-secondary" onclick="document.getElementById('employeePasswordResult').style.display = 'none'">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        `;
+        resultDiv.style.display = 'block';
+    }
+
+    // Set custom password for employee
+    async setCustomEmployeePassword(employeeId, employeeName) {
+        const password = document.getElementById('customEmployeePassword').value;
+        const confirmPassword = document.getElementById('confirmEmployeePassword').value;
+
+        if (!password || !confirmPassword) {
+            showAlert('Please fill in both password fields.', 'warning');
+            return;
+        }
+
+        if (password !== confirmPassword) {
+            showAlert('Passwords do not match.', 'warning');
+            return;
+        }
+
+        if (password.length < 6) {
+            showAlert('Password must be at least 6 characters long.', 'warning');
+            return;
+        }
+
+        try {
+            const companyId = auth.getCompanyId();
+            
+            const response = await fetch(`/api/company-admin/${companyId}/employees/${employeeId}/password`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ password: password })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to set password');
+            }
+
+            const result = await response.json();
+
+            // Show success message
+            const resultDiv = document.getElementById('employeePasswordResult');
+            resultDiv.innerHTML = `
+                <div class="alert alert-success">
+                    <h4><i class="fas fa-check-circle"></i> Password Set Successfully!</h4>
+                    <p>Custom password has been set for ${escapeHtml(employeeName)}.</p>
+                </div>
+            `;
+
+            showAlert('Password set successfully!', 'success');
+
+        } catch (error) {
+            showAlert('Failed to set password: ' + error.message, 'error');
+        }
     }
 
     async exportReport(companyId) {

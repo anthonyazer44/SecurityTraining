@@ -581,3 +581,227 @@ def get_company_progress_report(company_id):
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
+
+# Employee Password Management Routes
+
+@company_admin_bp.route('/<int:company_id>/employees/<int:employee_id>/password', methods=['GET'])
+def get_employee_password_info(company_id, employee_id):
+    """Get employee password information (for company admin)"""
+    try:
+        if not require_company_admin_auth(company_id):
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        
+        employee = Employee.query.filter_by(id=employee_id, company_id=company_id).first()
+        if not employee:
+            return jsonify({'success': False, 'message': 'Employee not found'}), 404
+        
+        return jsonify({
+            'success': True,
+            'employee_id': employee.id,
+            'employee_name': employee.name,
+            'employee_email': employee.email,
+            'has_password': bool(employee.password),
+            'password_last_updated': employee.updated_at.isoformat() if employee.updated_at else None
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@company_admin_bp.route('/<int:company_id>/employees/<int:employee_id>/password', methods=['PUT'])
+def update_employee_password(company_id, employee_id):
+    """Update/reset employee password"""
+    try:
+        if not require_company_admin_auth(company_id):
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        
+        employee = Employee.query.filter_by(id=employee_id, company_id=company_id).first()
+        if not employee:
+            return jsonify({'success': False, 'message': 'Employee not found'}), 404
+        
+        data = request.get_json()
+        
+        # Check if custom password provided or generate new one
+        if data.get('password'):
+            new_password = data['password']
+            # Validate password strength
+            if len(new_password) < 6:
+                return jsonify({'success': False, 'message': 'Password must be at least 6 characters long'}), 400
+        else:
+            # Generate secure password
+            new_password = PasswordSecurity.generate_secure_password(length=8)
+        
+        # Hash the new password
+        hashed_password = PasswordSecurity.hash_password(new_password)
+        
+        employee.password = hashed_password
+        employee.updated_at = datetime.now()
+        db.session.commit()
+        
+        # Log the password change
+        AuditLogger.log_security_event(
+            'EMPLOYEE_PASSWORD_RESET', 
+            f'Employee {employee.name} password reset by company admin',
+            request.remote_addr
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Employee password updated successfully',
+            'new_password': new_password,  # Return plain text for company admin
+            'employee_id': employee.id,
+            'employee_name': employee.name
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@company_admin_bp.route('/<int:company_id>/employees/<int:employee_id>/password/generate', methods=['POST'])
+def generate_employee_password(company_id, employee_id):
+    """Generate a new secure password for employee"""
+    try:
+        if not require_company_admin_auth(company_id):
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        
+        employee = Employee.query.filter_by(id=employee_id, company_id=company_id).first()
+        if not employee:
+            return jsonify({'success': False, 'message': 'Employee not found'}), 404
+        
+        # Generate new secure password
+        new_password = PasswordSecurity.generate_secure_password(length=8)
+        hashed_password = PasswordSecurity.hash_password(new_password)
+        
+        employee.password = hashed_password
+        employee.updated_at = datetime.now()
+        db.session.commit()
+        
+        # Log the password generation
+        AuditLogger.log_security_event(
+            'EMPLOYEE_PASSWORD_GENERATED', 
+            f'New password generated for employee {employee.name}',
+            request.remote_addr
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'New password generated successfully',
+            'new_password': new_password,
+            'employee_id': employee.id,
+            'employee_name': employee.name
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@company_admin_bp.route('/<int:company_id>/employees/passwords/bulk-reset', methods=['POST'])
+def bulk_reset_employee_passwords(company_id):
+    """Reset passwords for multiple employees"""
+    try:
+        if not require_company_admin_auth(company_id):
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        
+        data = request.get_json()
+        employee_ids = data.get('employee_ids', [])
+        
+        if not employee_ids:
+            return jsonify({'success': False, 'message': 'employee_ids are required'}), 400
+        
+        employees = Employee.query.filter(
+            Employee.id.in_(employee_ids),
+            Employee.company_id == company_id
+        ).all()
+        
+        reset_results = []
+        
+        for employee in employees:
+            # Generate new password for each employee
+            new_password = PasswordSecurity.generate_secure_password(length=8)
+            hashed_password = PasswordSecurity.hash_password(new_password)
+            
+            employee.password = hashed_password
+            employee.updated_at = datetime.now()
+            
+            reset_results.append({
+                'employee_id': employee.id,
+                'employee_name': employee.name,
+                'employee_email': employee.email,
+                'new_password': new_password
+            })
+        
+        db.session.commit()
+        
+        # Log bulk password reset
+        AuditLogger.log_security_event(
+            'BULK_EMPLOYEE_PASSWORD_RESET', 
+            f'Bulk password reset for {len(employees)} employees in company {company_id}',
+            request.remote_addr
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': f'Passwords reset for {len(employees)} employees',
+            'reset_results': reset_results
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@company_admin_bp.route('/<int:company_id>/employees/passwords/export', methods=['GET'])
+def export_employee_passwords(company_id):
+    """Export employee credentials for company admin"""
+    try:
+        if not require_company_admin_auth(company_id):
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        
+        employees = Employee.query.filter_by(company_id=company_id).all()
+        
+        # Note: This only provides info about which employees have passwords
+        # Actual passwords cannot be retrieved from hashed values
+        employee_credentials = []
+        for employee in employees:
+            employee_credentials.append({
+                'employee_id': employee.id,
+                'name': employee.name,
+                'email': employee.email,
+                'department': employee.department,
+                'has_password': bool(employee.password),
+                'created_date': employee.created_date.isoformat() if employee.created_date else None,
+                'last_updated': employee.updated_at.isoformat() if employee.updated_at else None
+            })
+        
+        return jsonify({
+            'success': True,
+            'company_id': company_id,
+            'total_employees': len(employees),
+            'employees': employee_credentials,
+            'export_date': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@company_admin_bp.route('/<int:company_id>/password-policy', methods=['GET'])
+def get_company_password_policy(company_id):
+    """Get password policy for the company"""
+    try:
+        if not require_company_admin_auth(company_id):
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        
+        return jsonify({
+            'success': True,
+            'policy': {
+                'minimum_length': 6,
+                'require_uppercase': False,
+                'require_lowercase': True,
+                'require_numbers': True,
+                'require_special_chars': False,
+                'password_expiry_days': 90,
+                'password_history_count': 3
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
